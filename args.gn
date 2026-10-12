@@ -8,7 +8,6 @@ blink_symbol_level = 0
 v8_symbol_level = 0
 # PGO のプロファイルは使わない（取りに行かない）
 chrome_pgo_phase = 0
-enable_nacl = false
 # Google のサービスにつながる部分（同期など）は鍵が無いので使わない
 use_official_google_api_keys = false
 # H.264 などの特許のあるコーデックは、配布の権利関係を確かめるまで入れない
