@@ -1,0 +1,250 @@
+diff --git a/chrome/browser/ui/views/toolbar/BUILD.gn b/chrome/browser/ui/views/toolbar/BUILD.gn
+index 367bb651c6..41074cb185 100644
+--- a/chrome/browser/ui/views/toolbar/BUILD.gn
++++ b/chrome/browser/ui/views/toolbar/BUILD.gn
+@@ -20,6 +20,7 @@ source_set("toolbar") {
+     "chrome_labs/chrome_labs_item_view.h",
+     "chrome_labs/chrome_labs_view_controller.h",
+     "home_button.h",
++    "nechrome_search_engine_button.h",
+     "overflow_button.h",
+     "overflow_menu.h",
+     "pinned_action_toolbar_button.h",
+@@ -63,6 +64,8 @@ source_set("toolbar") {
+   public_deps = [
+     "//base",
+     "//build:buildflag_header_h",
++    "//components/search_engines",
++    "//ui/menus",
+     "//chrome/browser:command_updater_impl",
+     "//chrome/browser/bookmarks",
+     "//chrome/browser/glic",
+@@ -132,6 +135,7 @@ source_set("impl") {
+     "chrome_labs/chrome_labs_item_view.cc",
+     "chrome_labs/chrome_labs_view_controller.cc",
+     "home_button.cc",
++    "nechrome_search_engine_button.cc",
+     "overflow_button.cc",
+     "overflow_menu.cc",
+     "pinned_action_toolbar_button.cc",
+@@ -171,6 +175,7 @@ source_set("impl") {
+   ]
+ 
+   deps = [
++    "//chrome/browser/search_engines",
+     ":toolbar",
+     "//base:i18n",
+     "//build:branding_buildflags",
+diff --git a/chrome/browser/ui/views/toolbar/nechrome_search_engine_button.cc b/chrome/browser/ui/views/toolbar/nechrome_search_engine_button.cc
+new file mode 100644
+index 0000000000..1e102eb887
+--- /dev/null
++++ b/chrome/browser/ui/views/toolbar/nechrome_search_engine_button.cc
+@@ -0,0 +1,96 @@
++// Copyright 2026 ASHIKA Group. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/toolbar/nechrome_search_engine_button.h"
++
++#include "base/functional/bind.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/search_engines/template_url_service_factory.h"
++#include "components/search_engines/template_url.h"
++#include "components/vector_icons/vector_icons.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/mojom/menu_source_type.mojom.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/button/menu_button_controller.h"
++#include "ui/views/controls/menu/menu_runner.h"
++
++NeChromeSearchEngineButton::NeChromeSearchEngineButton(Profile* profile)
++    : ToolbarButton(
++          base::BindRepeating(&NeChromeSearchEngineButton::ShowEngineMenu,
++                              base::Unretained(this))),
++      service_(TemplateURLServiceFactory::GetForProfile(profile)) {
++  SetVectorIcon(vector_icons::kSearchIcon);
++  GetViewAccessibility().SetName(u"Search engine");
++  if (service_) {
++    observation_.Observe(service_.get());
++    service_->Load();
++  }
++  UpdateTooltip();
++}
++
++NeChromeSearchEngineButton::~NeChromeSearchEngineButton() = default;
++
++void NeChromeSearchEngineButton::ShowEngineMenu() {
++  if (!service_ || !service_->loaded()) {
++    return;
++  }
++  engines_.clear();
++  menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  for (TemplateURL* engine : service_->GetTemplateURLs()) {
++    // Only engines that can be the default (the ones on the settings page's
++    // main list) are offered.
++    if (!service_->ShowInDefaultList(engine) ||
++        !service_->CanMakeDefault(engine)) {
++      continue;
++    }
++    menu_model_->AddCheckItem(static_cast<int>(engines_.size()),
++                              engine->short_name());
++    engines_.push_back(engine);
++  }
++  if (engines_.empty()) {
++    return;
++  }
++  menu_runner_ = std::make_unique<views::MenuRunner>(
++      menu_model_.get(), views::MenuRunner::HAS_MNEMONICS);
++  menu_runner_->RunMenuAt(GetWidget(), nullptr, GetAnchorBoundsInScreen(),
++                          views::MenuAnchorPosition::kTopLeft,
++                          ui::mojom::MenuSourceType::kNone);
++}
++
++bool NeChromeSearchEngineButton::IsCommandIdChecked(int command_id) const {
++  if (!service_ || command_id < 0 ||
++      static_cast<size_t>(command_id) >= engines_.size()) {
++    return false;
++  }
++  return engines_[command_id] == service_->GetDefaultSearchProvider();
++}
++
++void NeChromeSearchEngineButton::ExecuteCommand(int command_id,
++                                                int event_flags) {
++  if (!service_ || command_id < 0 ||
++      static_cast<size_t>(command_id) >= engines_.size()) {
++    return;
++  }
++  service_->SetUserSelectedDefaultSearchProvider(engines_[command_id]);
++}
++
++void NeChromeSearchEngineButton::OnTemplateURLServiceChanged() {
++  UpdateTooltip();
++}
++
++void NeChromeSearchEngineButton::OnTemplateURLServiceShuttingDown() {
++  observation_.Reset();
++  engines_.clear();
++  service_ = nullptr;
++}
++
++void NeChromeSearchEngineButton::UpdateTooltip() {
++  const TemplateURL* engine =
++      service_ ? service_->GetDefaultSearchProvider() : nullptr;
++  SetTooltipText(engine ? u"Search engine: " + engine->short_name()
++                        : u"Search engine");
++}
++
++BEGIN_METADATA(NeChromeSearchEngineButton)
++END_METADATA
+diff --git a/chrome/browser/ui/views/toolbar/nechrome_search_engine_button.h b/chrome/browser/ui/views/toolbar/nechrome_search_engine_button.h
+new file mode 100644
+index 0000000000..8ca0b211ff
+--- /dev/null
++++ b/chrome/browser/ui/views/toolbar/nechrome_search_engine_button.h
+@@ -0,0 +1,62 @@
++// Copyright 2026 ASHIKA Group. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_TOOLBAR_NECHROME_SEARCH_ENGINE_BUTTON_H_
++#define CHROME_BROWSER_UI_VIEWS_TOOLBAR_NECHROME_SEARCH_ENGINE_BUTTON_H_
++
++#include <memory>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "base/scoped_observation.h"
++#include "chrome/browser/ui/views/toolbar/toolbar_button.h"
++#include "components/search_engines/template_url_service.h"
++#include "components/search_engines/template_url_service_observer.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/menus/simple_menu_model.h"
++
++class Profile;
++class TemplateURL;
++
++namespace views {
++class MenuRunner;
++}
++
++// NeChrome: a button next to the location bar that shows the default search
++// engine and lets the user switch it from a menu, without opening settings.
++class NeChromeSearchEngineButton : public ToolbarButton,
++                                   public ui::SimpleMenuModel::Delegate,
++                                   public TemplateURLServiceObserver {
++  METADATA_HEADER(NeChromeSearchEngineButton, ToolbarButton)
++
++ public:
++  explicit NeChromeSearchEngineButton(Profile* profile);
++  NeChromeSearchEngineButton(const NeChromeSearchEngineButton&) = delete;
++  NeChromeSearchEngineButton& operator=(const NeChromeSearchEngineButton&) =
++      delete;
++  ~NeChromeSearchEngineButton() override;
++
++  // ui::SimpleMenuModel::Delegate:
++  bool IsCommandIdChecked(int command_id) const override;
++  void ExecuteCommand(int command_id, int event_flags) override;
++
++  // TemplateURLServiceObserver:
++  void OnTemplateURLServiceChanged() override;
++  void OnTemplateURLServiceShuttingDown() override;
++
++ private:
++  void ShowEngineMenu();
++  void UpdateTooltip();
++
++  raw_ptr<TemplateURLService> service_;
++  // Engines in the order they appear in the menu (the command id is the
++  // index).
++  std::vector<raw_ptr<TemplateURL>> engines_;
++  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
++  std::unique_ptr<views::MenuRunner> menu_runner_;
++  base::ScopedObservation<TemplateURLService, TemplateURLServiceObserver>
++      observation_{this};
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_TOOLBAR_NECHROME_SEARCH_ENGINE_BUTTON_H_
+diff --git a/chrome/browser/ui/views/toolbar/toolbar_view.cc b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+index bfc981b7ee..c62dac5da4 100644
+--- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
++++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+@@ -103,6 +103,7 @@
+ #include "chrome/browser/ui/views/toolbar/browser_app_menu_button.h"
+ #include "chrome/browser/ui/views/toolbar/chrome_labs/chrome_labs_coordinator.h"
+ #include "chrome/browser/ui/views/toolbar/home_button.h"
++#include "chrome/browser/ui/views/toolbar/nechrome_search_engine_button.h"
+ #include "chrome/browser/ui/views/toolbar/overflow_menu.h"
+ #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
+ #include "chrome/browser/ui/views/toolbar/reload_button.h"
+@@ -485,6 +486,10 @@ void ToolbarView::Init() {
+     location_bar_ = toolbar_webview_->GetLocationBar();
+   }
+ 
++  // NeChrome: switch the default search engine right next to the URL bar.
++  nechrome_search_engine_button_ = AddChildView(
++      std::make_unique<NeChromeSearchEngineButton>(browser_->GetProfile()));
++
+   bool is_glic_left_of_profile =
+       features::kGlicToolbarButtonLocationParam.Get() ==
+           features::GlicToolbarButtonLocation::kLeftOfProfileChip ||
+diff --git a/chrome/browser/ui/views/toolbar/toolbar_view.h b/chrome/browser/ui/views/toolbar/toolbar_view.h
+index 0520c29012..5bf2ee540f 100644
+--- a/chrome/browser/ui/views/toolbar/toolbar_view.h
++++ b/chrome/browser/ui/views/toolbar/toolbar_view.h
+@@ -55,6 +55,7 @@ class BrowserWindowInterface;
+ class ExtensionsToolbarButton;
+ class ExtensionsToolbarDesktop;
+ class HomeButton;
++class NeChromeSearchEngineButton;
+ class ExtensionsToolbarCoordinator;
+ class MediaToolbarButton;
+ class ReloadButton;
+@@ -413,6 +414,7 @@ class ToolbarView : public views::AccessiblePaneView,
+   raw_ptr<WebUIToolbarWebView> toolbar_webview_ = nullptr;
+   std::unique_ptr<WebUIToolbarWebView> detached_toolbar_webview_;
+   raw_ptr<HomeButton> home_ = nullptr;
++  raw_ptr<NeChromeSearchEngineButton> nechrome_search_engine_button_ = nullptr;
+   raw_ptr<SplitTabsToolbarButton> split_tabs_ = nullptr;
+   raw_ptr<CustomTabBarView> custom_tab_bar_ = nullptr;
+   raw_ptr<LocationBarView> location_bar_view_ = nullptr;

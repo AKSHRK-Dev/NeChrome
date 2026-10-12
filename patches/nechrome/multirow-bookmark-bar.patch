@@ -1,0 +1,176 @@
+diff --git a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
+index b5442449ae..cd9d074757 100644
+--- a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
++++ b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
+@@ -627,10 +627,32 @@ std::u16string BookmarkBarView::CreateToolTipForURLAndTitle(
+   return result;
+ }
+ 
++namespace {
++// NeChrome: the bookmark bar wraps onto at most this many rows before the
++// overflow (») menu takes the rest.
++constexpr int kNeChromeMaxBookmarkRows = 3;
++// NeChrome: vertical gap between two rows of bookmark buttons.
++constexpr int kNeChromeRowGap = 4;
++int NeChromeRowStep() {
++  return GetLayoutConstant(LayoutConstant::kBookmarkBarButtonHeight) +
++         kNeChromeRowGap;
++}
++}  // namespace
++
++void BookmarkBarView::NeChromeRowsChanged() {
++  PreferredSizeChanged();
++  // The browser window lays out the bookmark bar from its preferred height,
++  // so ask it to lay out again for the new number of rows.
++  if (browser_view_) {
++    browser_view_->InvalidateLayout();
++  }
++}
++
+ gfx::Size BookmarkBarView::CalculatePreferredSize(
+     const views::SizeBounds& available_size) const {
+   gfx::Size prefsize;
+-  int preferred_height = GetLayoutConstant(LayoutConstant::kBookmarkBarHeight);
++  int preferred_height = GetLayoutConstant(LayoutConstant::kBookmarkBarHeight) +
++                         (nechrome_rows_ - 1) * NeChromeRowStep();
+   prefsize.set_height(
+       static_cast<int>(preferred_height * size_animation_.GetCurrentValue()));
+   return prefsize;
+@@ -704,7 +726,11 @@ void BookmarkBarView::Layout(PassKey) {
+                             browser_view_->GetLocationBar()->Bounds().bottom();
+   }
+   // Center the buttons in the total available space.
+-  const int total_height = GetContentsBounds().height() + toolbar_bottom_margin;
++  // NeChrome: center within the first row only; extra rows go below it.
++  const int total_height =
++      std::min(GetContentsBounds().height(),
++               GetLayoutConstant(LayoutConstant::kBookmarkBarHeight)) +
++      toolbar_bottom_margin;
+   const auto center_y = [total_height, toolbar_bottom_margin](int height) {
+     const int top_margin = (total_height - height) / 2;
+     // Calculate the top inset in the bookmarks bar itself (not counting the
+@@ -829,8 +855,12 @@ void BookmarkBarView::Layout(PassKey) {
+     }
+   }
+ 
++  // NeChrome: rows used by the bookmark buttons in this layout.
++  int rows_used = 1;
+   if (bookmark_bar_children_count) {
+     bool can_render_button_bounds = x < max_x;
++    const int row_start_x = x;
++    int row = 0;
+     size_t button_count = bookmark_buttons_.size();
+     BookmarkParentFolderChildren bookmark_bar_children =
+         bookmark_service_->GetChildren(bookmark_bar_folder);
+@@ -852,16 +882,34 @@ void BookmarkBarView::Layout(PassKey) {
+       // and set its bounds.
+       gfx::Size pref = child->GetPreferredSize();
+       int next_x = x + pref.width() + bookmark_bar_button_padding;
++      // NeChrome: when the row is full, continue on the next row instead of
++      // hiding the button, up to kNeChromeMaxBookmarkRows rows.
++      if (next_x >= max_x && x > row_start_x &&
++          row + 1 < kNeChromeMaxBookmarkRows) {
++        ++row;
++        x = row_start_x;
++        next_x = x + pref.width() + bookmark_bar_button_padding;
++      }
+       can_render_button_bounds = next_x < max_x;
+       child->SetVisible(can_render_button_bounds);
+       // Only need to set bounds if the view is actually visible.
+       if (can_render_button_bounds) {
+-        child->SetBounds(x, y, pref.width(), button_height);
++        child->SetBounds(x, y + row * NeChromeRowStep(), pref.width(),
++                         button_height);
++        rows_used = row + 1;
+       }
+       x = next_x;
+     }
+   }
+ 
++  if (rows_used != nechrome_rows_) {
++    nechrome_rows_ = rows_used;
++    // The new height is picked up by the parent after this layout finishes.
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&BookmarkBarView::NeChromeRowsChanged,
++                                  weak_ptr_factory_.GetWeakPtr()));
++  }
++
+   const bool show_bookmarks_overflow =
+       bookmark_service_->loaded() &&
+       (bookmark_bar_children_count > bookmark_buttons_.size() ||
+@@ -947,10 +995,20 @@ void BookmarkBarView::PaintChildren(const views::PaintInfo& paint_info) {
+     } else {
+       x = bookmark_buttons_[index].first->x();
+     }
+-    if (!bookmark_buttons_.empty() &&
+-        bookmark_buttons_.front().first->GetVisible()) {
+-      y = bookmark_buttons_.front().first->y();
+-      h = bookmark_buttons_.front().first->height();
++    // NeChrome: draw the indicator on the row of the button it points at.
++    const views::View* row_button = nullptr;
++    if (index < bookmark_buttons_.size() &&
++        bookmark_buttons_[index].first->GetVisible()) {
++      row_button = bookmark_buttons_[index].first;
++    } else if (index > 0 && bookmark_buttons_[index - 1].first->GetVisible()) {
++      row_button = bookmark_buttons_[index - 1].first;
++    } else if (!bookmark_buttons_.empty() &&
++               bookmark_buttons_.front().first->GetVisible()) {
++      row_button = bookmark_buttons_.front().first;
++    }
++    if (row_button) {
++      y = row_button->y();
++      h = row_button->height();
+     }
+ 
+     // Since the drop indicator is painted directly onto the canvas, we must
+@@ -1933,10 +1991,19 @@ void BookmarkBarView::CalculateDropLocation(
+     return;
+   }
+ 
++  // NeChrome: with several rows, only the buttons on the row under the pointer
++  // count. Past the end of a row that is not the last, drop after its last
++  // button.
++  std::optional<size_t> row_last_index;
+   for (size_t i = 0; i < bookmark_buttons_.size() &&
+                      bookmark_buttons_[i].first->GetVisible() && !found;
+        i++) {
+     views::LabelButton* button = bookmark_buttons_[i].first;
++    if (event.y() < button->y() - kNeChromeRowGap / 2 ||
++        event.y() >= button->bounds().bottom() + kNeChromeRowGap / 2) {
++      continue;
++    }
++    row_last_index = i;
+     int button_x = mirrored_x - button->x();
+     int button_w = button->width();
+     if (button_x < button_w) {
+@@ -1960,6 +2027,13 @@ void BookmarkBarView::CalculateDropLocation(
+     }
+   }
+ 
++  if (!found && row_last_index.has_value() &&
++      *row_last_index + 1 < bookmark_buttons_.size() &&
++      bookmark_buttons_[*row_last_index + 1].first->GetVisible()) {
++    location->index = *row_last_index + 1;
++    found = true;
++  }
++
+   if (!found) {
+     if (overflow_button_->GetVisible()) {
+       // Are we over the overflow button?
+diff --git a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h
+index 1ecd6d72fe..3e94064c37 100644
+--- a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h
++++ b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h
+@@ -482,6 +482,12 @@ class BookmarkBarView : public views::AccessiblePaneView,
+   // This is used to populate the overflow bookmarks button.
+   size_t first_hidden_node_idx_ = 0;
+ 
++  // NeChrome: number of rows the bookmark buttons currently use (1 or more).
++  // The bar grows by one button row for each extra row.
++  int nechrome_rows_ = 1;
++  // NeChrome: tells the parent that the bar height changed, after Layout().
++  void NeChromeRowsChanged();
++
+   raw_ptr<ButtonSeparatorView> bookmarks_separator_view_ = nullptr;
+   raw_ptr<ButtonSeparatorView> saved_tab_groups_separator_view_ = nullptr;
+ 
