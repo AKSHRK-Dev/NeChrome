@@ -1,0 +1,7 @@
+# 当てる順番。1行に1つ、patches/ からの相対パス。# から後ろは無視する
+# branding は scripts/apply.sh がファイルを上書きして行う（パッチではない）
+#
+# 予定（Chromium のソースを取ってから作る）:
+# nechrome/multirow-bookmark-bar.patch     ブックマークバーを複数段にする
+# nechrome/omnibox-search-engine-picker.patch  URL バーの横に検索エンジンの切り替えボタン
+# nechrome/bookmark-bar-drag-hints.patch   ブックマークバーの並べ替えをドラッグでしやすくする

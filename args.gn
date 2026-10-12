@@ -1,0 +1,17 @@
+# NeChrome のビルド設定（gn args）。scripts/build-linux.sh / build-windows.ps1 が out/NeChrome にコピーする
+is_debug = false
+is_component_build = false
+is_official_build = false
+# 記号（デバッグ情報）を持たない。ビルドの大きさと時間を大きく減らす
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+# PGO のプロファイルは使わない（取りに行かない）
+chrome_pgo_phase = 0
+enable_nacl = false
+# Google のサービスにつながる部分（同期など）は鍵が無いので使わない
+use_official_google_api_keys = false
+# H.264 などの特許のあるコーデックは、配布の権利関係を確かめるまで入れない
+proprietary_codecs = false
+ffmpeg_branding = "Chromium"
+treat_warnings_as_errors = false
