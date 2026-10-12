@@ -1,6 +1,9 @@
 #!/bin/bash
-# Chromium のソースを、chromium_version.txt の版で取ってくる（履歴なし。約 35GB）。
+# Chromium のソースを、chromium_version.txt の版だけ取ってくる（履歴なし。約 35GB）。
 #   bash scripts/setup-linux.sh [作業場所。省略で ~/chromium]
+#
+# sudo が要る「ビルドに必要な部品を入れる」手順（install-build-deps.sh）は、ここではやらない。
+# 終わったあとに表示されるコマンドを、ご自身で一度だけ打ってください。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${1:-$HOME/chromium}"
@@ -12,13 +15,15 @@ fi
 export PATH="$HOME/depot_tools:$PATH"
 
 mkdir -p "$WORK" && cd "$WORK"
-if [ ! -d src ]; then
-  fetch --nohooks --no-history chromium
+if [ ! -f .gclient ]; then
+  gclient config --name src --unmanaged https://chromium.googlesource.com/chromium/src.git
 fi
-cd src
-git fetch --depth 1 origin "refs/tags/$VERSION:refs/tags/$VERSION"
-git checkout -f "tags/$VERSION"
-gclient sync -D --force --reset --no-history --with_branch_heads
-./build/install-build-deps.sh --no-prompt
+# 目的の版のタグだけを、履歴なしで取る（中で使う部品も、その版に合わせて取る）
+gclient sync --nohooks --no-history -D --revision "src@refs/tags/$VERSION"
 gclient runhooks
-echo "Chromium $VERSION を $WORK/src に用意しました。次は scripts/apply.sh"
+
+echo
+echo "Chromium $VERSION を $WORK/src に用意しました。"
+echo "最初の1回だけ、次のコマンドでビルドに必要な部品を入れてください（sudo のパスワードを聞かれます）:"
+echo "  $WORK/src/build/install-build-deps.sh --no-prompt"
+echo "そのあと: bash scripts/apply.sh → bash scripts/build-linux.sh"
