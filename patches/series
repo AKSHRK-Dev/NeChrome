@@ -1,7 +1,11 @@
 # 当てる順番。1行に1つ、patches/ からの相対パス。# から後ろは無視する
 # branding は scripts/apply.sh がファイルを上書きして行う（パッチではない）
 #
-# ブックマークバーを最大 3 段に折り返す。ドラッグでの並べ替えも段ごとに効く
+# NeChrome 本体は Chrome と同じ動きのまま、拡張機能（プラグイン）用の入口だけを足す。
+#
+# ブックマークバーを複数段に折り返せるようにする（設定 nechrome.bookmark_bar.max_rows、
+# 初期値 1 = Chrome と同じ）。ドラッグでの並べ替えも段ごとに効く
 nechrome/multirow-bookmark-bar.patch
-# URL バーの横に、既定の検索エンジンを切り替えるボタン
-nechrome/search-engine-button.patch
+# 拡張機能用の API chrome.nechrome（"nechrome" 権限）:
+#   getBookmarkBarMaxRows / setBookmarkBarMaxRows / getSearchEngines / setDefaultSearchEngine
+nechrome/nechrome-extension-api.patch

@@ -1,15 +1,45 @@
+diff --git a/chrome/browser/ui/browser_ui_prefs.cc b/chrome/browser/ui/browser_ui_prefs.cc
+index 6997bb36d9..efb0b75440 100644
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -124,6 +124,7 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
+ 
+   registry->RegisterBooleanPref(prefs::kHomePageIsNewTabPage, true,
+                                 pref_registration_flags);
++  registry->RegisterIntegerPref(prefs::kNeChromeBookmarkBarMaxRows, 1);
+   registry->RegisterBooleanPref(prefs::kShowHomeButton, false,
+                                 pref_registration_flags);
+   registry->RegisterBooleanPref(prefs::kSplitViewDragAndDropEnabled, true,
 diff --git a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
-index b5442449ae..cd9d074757 100644
+index b5442449ae..0a6e5daa32 100644
 --- a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
 +++ b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
-@@ -627,10 +627,32 @@ std::u16string BookmarkBarView::CreateToolTipForURLAndTitle(
+@@ -404,6 +404,18 @@ BookmarkBarView::BookmarkBarView(
+   GetViewAccessibility().SetName(
+       l10n_util::GetStringUTF8(IDS_ACCNAME_BOOKMARKS));
+ 
++  // NeChrome: lay out again when an extension changes the number of rows.
++  if (browser_ && browser_->GetProfile()) {
++    nechrome_prefs_.Init(browser_->GetProfile()->GetPrefs());
++    nechrome_prefs_.Add(prefs::kNeChromeBookmarkBarMaxRows,
++                        base::BindRepeating(
++                            [](BookmarkBarView* view) {
++                              view->InvalidateLayout();
++                              view->NeChromeRowsChanged();
++                            },
++                            base::Unretained(this)));
++  }
++
+   Init();
+ 
+   if (controller_) {
+@@ -627,10 +639,40 @@ std::u16string BookmarkBarView::CreateToolTipForURLAndTitle(
    return result;
  }
  
 +namespace {
-+// NeChrome: the bookmark bar wraps onto at most this many rows before the
-+// overflow (») menu takes the rest.
-+constexpr int kNeChromeMaxBookmarkRows = 3;
++// NeChrome: upper bound for the number of rows an extension can ask for.
++constexpr int kNeChromeRowLimit = 5;
 +// NeChrome: vertical gap between two rows of bookmark buttons.
 +constexpr int kNeChromeRowGap = 4;
 +int NeChromeRowStep() {
@@ -17,6 +47,15 @@ index b5442449ae..cd9d074757 100644
 +         kNeChromeRowGap;
 +}
 +}  // namespace
++
++int BookmarkBarView::NeChromeMaxRows() const {
++  if (!nechrome_prefs_.prefs()) {
++    return 1;
++  }
++  return std::clamp(
++      nechrome_prefs_.prefs()->GetInteger(prefs::kNeChromeBookmarkBarMaxRows),
++      1, kNeChromeRowLimit);
++}
 +
 +void BookmarkBarView::NeChromeRowsChanged() {
 +  PreferredSizeChanged();
@@ -36,7 +75,7 @@ index b5442449ae..cd9d074757 100644
    prefsize.set_height(
        static_cast<int>(preferred_height * size_animation_.GetCurrentValue()));
    return prefsize;
-@@ -704,7 +726,11 @@ void BookmarkBarView::Layout(PassKey) {
+@@ -704,7 +746,11 @@ void BookmarkBarView::Layout(PassKey) {
                              browser_view_->GetLocationBar()->Bounds().bottom();
    }
    // Center the buttons in the total available space.
@@ -49,7 +88,7 @@ index b5442449ae..cd9d074757 100644
    const auto center_y = [total_height, toolbar_bottom_margin](int height) {
      const int top_margin = (total_height - height) / 2;
      // Calculate the top inset in the bookmarks bar itself (not counting the
-@@ -829,8 +855,12 @@ void BookmarkBarView::Layout(PassKey) {
+@@ -829,8 +875,13 @@ void BookmarkBarView::Layout(PassKey) {
      }
    }
  
@@ -58,18 +97,19 @@ index b5442449ae..cd9d074757 100644
    if (bookmark_bar_children_count) {
      bool can_render_button_bounds = x < max_x;
 +    const int row_start_x = x;
++    const int max_rows = NeChromeMaxRows();
 +    int row = 0;
      size_t button_count = bookmark_buttons_.size();
      BookmarkParentFolderChildren bookmark_bar_children =
          bookmark_service_->GetChildren(bookmark_bar_folder);
-@@ -852,16 +882,34 @@ void BookmarkBarView::Layout(PassKey) {
+@@ -852,16 +903,34 @@ void BookmarkBarView::Layout(PassKey) {
        // and set its bounds.
        gfx::Size pref = child->GetPreferredSize();
        int next_x = x + pref.width() + bookmark_bar_button_padding;
 +      // NeChrome: when the row is full, continue on the next row instead of
-+      // hiding the button, up to kNeChromeMaxBookmarkRows rows.
++      // hiding the button, up to the number of rows set in the pref.
 +      if (next_x >= max_x && x > row_start_x &&
-+          row + 1 < kNeChromeMaxBookmarkRows) {
++          row + 1 < max_rows) {
 +        ++row;
 +        x = row_start_x;
 +        next_x = x + pref.width() + bookmark_bar_button_padding;
@@ -98,7 +138,7 @@ index b5442449ae..cd9d074757 100644
    const bool show_bookmarks_overflow =
        bookmark_service_->loaded() &&
        (bookmark_bar_children_count > bookmark_buttons_.size() ||
-@@ -947,10 +995,20 @@ void BookmarkBarView::PaintChildren(const views::PaintInfo& paint_info) {
+@@ -947,10 +1016,20 @@ void BookmarkBarView::PaintChildren(const views::PaintInfo& paint_info) {
      } else {
        x = bookmark_buttons_[index].first->x();
      }
@@ -123,7 +163,7 @@ index b5442449ae..cd9d074757 100644
      }
  
      // Since the drop indicator is painted directly onto the canvas, we must
-@@ -1933,10 +1991,19 @@ void BookmarkBarView::CalculateDropLocation(
+@@ -1933,10 +2012,19 @@ void BookmarkBarView::CalculateDropLocation(
      return;
    }
  
@@ -143,7 +183,7 @@ index b5442449ae..cd9d074757 100644
      int button_x = mirrored_x - button->x();
      int button_w = button->width();
      if (button_x < button_w) {
-@@ -1960,6 +2027,13 @@ void BookmarkBarView::CalculateDropLocation(
+@@ -1960,6 +2048,13 @@ void BookmarkBarView::CalculateDropLocation(
      }
    }
  
@@ -158,10 +198,18 @@ index b5442449ae..cd9d074757 100644
      if (overflow_button_->GetVisible()) {
        // Are we over the overflow button?
 diff --git a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h
-index 1ecd6d72fe..3e94064c37 100644
+index 1ecd6d72fe..7ecc178dc5 100644
 --- a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h
 +++ b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.h
-@@ -482,6 +482,12 @@ class BookmarkBarView : public views::AccessiblePaneView,
+@@ -12,6 +12,7 @@
+ 
+ #include "base/functional/callback_forward.h"
+ #include "base/memory/raw_ptr.h"
++#include "components/prefs/pref_change_registrar.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/observer_list.h"
+ #include "base/scoped_observation.h"
+@@ -482,6 +483,15 @@ class BookmarkBarView : public views::AccessiblePaneView,
    // This is used to populate the overflow bookmarks button.
    size_t first_hidden_node_idx_ = 0;
  
@@ -170,7 +218,26 @@ index 1ecd6d72fe..3e94064c37 100644
 +  int nechrome_rows_ = 1;
 +  // NeChrome: tells the parent that the bar height changed, after Layout().
 +  void NeChromeRowsChanged();
++  // NeChrome: the most rows allowed (prefs::kNeChromeBookmarkBarMaxRows).
++  int NeChromeMaxRows() const;
++  PrefChangeRegistrar nechrome_prefs_;
 +
    raw_ptr<ButtonSeparatorView> bookmarks_separator_view_ = nullptr;
    raw_ptr<ButtonSeparatorView> saved_tab_groups_separator_view_ = nullptr;
  
+diff --git a/chrome/common/pref_names.h b/chrome/common/pref_names.h
+index a4b175a64f..8dc67c45ba 100644
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -603,6 +603,11 @@ inline constexpr char
+ // visible on the toolbar.
+ inline constexpr char kShowHomeButton[] = "browser.show_home_button";
+ 
++// NeChrome: how many rows the bookmark bar may wrap onto (1 = like Chrome).
++// Set by extensions through chrome.nechrome.bookmarkBar.setMaxRows().
++inline constexpr char kNeChromeBookmarkBarMaxRows[] =
++    "nechrome.bookmark_bar.max_rows";
++
+ // A boolean pref set to true if the Forward button should be visible on the
+ // toolbar.
+ inline constexpr char kShowForwardButton[] = "browser.show_forward_button";

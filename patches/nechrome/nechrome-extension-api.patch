@@ -1,0 +1,368 @@
+diff --git a/chrome/browser/extensions/api/BUILD.gn b/chrome/browser/extensions/api/BUILD.gn
+index 76252be893..52cd6d5b89 100644
+--- a/chrome/browser/extensions/api/BUILD.gn
++++ b/chrome/browser/extensions/api/BUILD.gn
+@@ -41,6 +41,7 @@ group("api_implementations") {
+     "//chrome/browser/extensions/api/enterprise_webrtc",
+     "//chrome/browser/extensions/api/extension_action",
+     "//chrome/browser/extensions/api/font_settings",
++    "//chrome/browser/extensions/api/nechrome",
+     "//chrome/browser/extensions/api/gcm",
+     "//chrome/browser/extensions/api/glic_private",
+     "//chrome/browser/extensions/api/history",
+diff --git a/chrome/browser/extensions/api/nechrome/BUILD.gn b/chrome/browser/extensions/api/nechrome/BUILD.gn
+new file mode 100644
+index 0000000000..fadd641963
+--- /dev/null
++++ b/chrome/browser/extensions/api/nechrome/BUILD.gn
+@@ -0,0 +1,30 @@
++# Copyright 2026 ASHIKA Group. All rights reserved.
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++import("//extensions/buildflags/buildflags.gni")
++
++assert(enable_extensions_core)
++
++# NeChrome: chrome.nechrome (chrome/common/extensions/api/nechrome.json).
++source_set("nechrome") {
++  sources = [
++    "nechrome_api.cc",
++    "nechrome_api.h",
++  ]
++
++  public_deps = [
++    "//base",
++    "//extensions/browser",
++  ]
++
++  deps = [
++    "//chrome/browser/profiles:profile",
++    "//chrome/browser/search_engines",
++    "//chrome/common",
++    "//chrome/common/extensions/api",
++    "//components/prefs",
++    "//components/search_engines",
++    "//extensions/common",
++  ]
++}
+diff --git a/chrome/browser/extensions/api/nechrome/nechrome_api.cc b/chrome/browser/extensions/api/nechrome/nechrome_api.cc
+new file mode 100644
+index 0000000000..9c0bee5488
+--- /dev/null
++++ b/chrome/browser/extensions/api/nechrome/nechrome_api.cc
+@@ -0,0 +1,107 @@
++// Copyright 2026 ASHIKA Group. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/extensions/api/nechrome/nechrome_api.h"
++
++#include <algorithm>
++#include <string>
++#include <vector>
++
++#include "base/strings/number_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/search_engines/template_url_service_factory.h"
++#include "chrome/common/extensions/api/nechrome.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++#include "components/search_engines/template_url.h"
++#include "components/search_engines/template_url_service.h"
++
++namespace nechrome = extensions::api::nechrome;
++
++namespace {
++
++constexpr int kMaxRows = 5;
++
++// Incognito windows use the regular profile's settings.
++Profile* OriginalProfile(content::BrowserContext* context) {
++  return Profile::FromBrowserContext(context)->GetOriginalProfile();
++}
++
++TemplateURLService* LoadedService(content::BrowserContext* context) {
++  TemplateURLService* service =
++      TemplateURLServiceFactory::GetForProfile(OriginalProfile(context));
++  if (!service) {
++    return nullptr;
++  }
++  service->Load();
++  return service->loaded() ? service : nullptr;
++}
++
++constexpr char kNotReady[] =
++    "The search engine list is still loading. Please try again.";
++
++}  // namespace
++
++ExtensionFunction::ResponseAction NechromeGetBookmarkBarMaxRowsFunction::Run() {
++  const int rows = OriginalProfile(browser_context())
++                       ->GetPrefs()
++                       ->GetInteger(prefs::kNeChromeBookmarkBarMaxRows);
++  return RespondNow(ArgumentList(nechrome::GetBookmarkBarMaxRows::Results::Create(
++      std::clamp(rows, 1, kMaxRows))));
++}
++
++ExtensionFunction::ResponseAction NechromeSetBookmarkBarMaxRowsFunction::Run() {
++  auto params = nechrome::SetBookmarkBarMaxRows::Params::Create(args());
++  EXTENSION_FUNCTION_VALIDATE(params);
++  if (params->rows < 1 || params->rows > kMaxRows) {
++    return RespondNow(Error("rows must be between 1 and 5."));
++  }
++  OriginalProfile(browser_context())
++      ->GetPrefs()
++      ->SetInteger(prefs::kNeChromeBookmarkBarMaxRows, params->rows);
++  return RespondNow(NoArguments());
++}
++
++ExtensionFunction::ResponseAction NechromeGetSearchEnginesFunction::Run() {
++  TemplateURLService* service = LoadedService(browser_context());
++  if (!service) {
++    return RespondNow(Error(kNotReady));
++  }
++  const TemplateURL* current = service->GetDefaultSearchProvider();
++  std::vector<nechrome::SearchEngine> engines;
++  for (TemplateURL* url : service->GetTemplateURLs()) {
++    if (!service->ShowInDefaultList(url) || !service->CanMakeDefault(url)) {
++      continue;
++    }
++    nechrome::SearchEngine engine;
++    engine.id = base::NumberToString(url->id());
++    engine.name = base::UTF16ToUTF8(url->short_name());
++    engine.keyword = base::UTF16ToUTF8(url->keyword());
++    engine.is_default = url == current;
++    engines.push_back(std::move(engine));
++  }
++  return RespondNow(
++      ArgumentList(nechrome::GetSearchEngines::Results::Create(engines)));
++}
++
++ExtensionFunction::ResponseAction NechromeSetDefaultSearchEngineFunction::Run() {
++  auto params = nechrome::SetDefaultSearchEngine::Params::Create(args());
++  EXTENSION_FUNCTION_VALIDATE(params);
++  TemplateURLService* service = LoadedService(browser_context());
++  if (!service) {
++    return RespondNow(Error(kNotReady));
++  }
++  for (TemplateURL* url : service->GetTemplateURLs()) {
++    if (base::NumberToString(url->id()) != params->id) {
++      continue;
++    }
++    if (!service->ShowInDefaultList(url) || !service->CanMakeDefault(url)) {
++      return RespondNow(Error("This search engine cannot be the default."));
++    }
++    service->SetUserSelectedDefaultSearchProvider(url);
++    return RespondNow(NoArguments());
++  }
++  return RespondNow(Error("No search engine has that id."));
++}
+diff --git a/chrome/browser/extensions/api/nechrome/nechrome_api.h b/chrome/browser/extensions/api/nechrome/nechrome_api.h
+new file mode 100644
+index 0000000000..46a44521b7
+--- /dev/null
++++ b/chrome/browser/extensions/api/nechrome/nechrome_api.h
+@@ -0,0 +1,53 @@
++// Copyright 2026 ASHIKA Group. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_EXTENSIONS_API_NECHROME_NECHROME_API_H_
++#define CHROME_BROWSER_EXTENSIONS_API_NECHROME_NECHROME_API_H_
++
++#include "extensions/browser/extension_function.h"
++
++// NeChrome: chrome.nechrome. Lets extensions change the number of bookmark bar
++// rows and the default search engine, which Chrome keeps closed to extensions.
++
++class NechromeGetBookmarkBarMaxRowsFunction : public ExtensionFunction {
++ public:
++  DECLARE_EXTENSION_FUNCTION("nechrome.getBookmarkBarMaxRows",
++                             NECHROME_GETBOOKMARKBARMAXROWS)
++
++ protected:
++  ~NechromeGetBookmarkBarMaxRowsFunction() override = default;
++  ResponseAction Run() override;
++};
++
++class NechromeSetBookmarkBarMaxRowsFunction : public ExtensionFunction {
++ public:
++  DECLARE_EXTENSION_FUNCTION("nechrome.setBookmarkBarMaxRows",
++                             NECHROME_SETBOOKMARKBARMAXROWS)
++
++ protected:
++  ~NechromeSetBookmarkBarMaxRowsFunction() override = default;
++  ResponseAction Run() override;
++};
++
++class NechromeGetSearchEnginesFunction : public ExtensionFunction {
++ public:
++  DECLARE_EXTENSION_FUNCTION("nechrome.getSearchEngines",
++                             NECHROME_GETSEARCHENGINES)
++
++ protected:
++  ~NechromeGetSearchEnginesFunction() override = default;
++  ResponseAction Run() override;
++};
++
++class NechromeSetDefaultSearchEngineFunction : public ExtensionFunction {
++ public:
++  DECLARE_EXTENSION_FUNCTION("nechrome.setDefaultSearchEngine",
++                             NECHROME_SETDEFAULTSEARCHENGINE)
++
++ protected:
++  ~NechromeSetDefaultSearchEngineFunction() override = default;
++  ResponseAction Run() override;
++};
++
++#endif  // CHROME_BROWSER_EXTENSIONS_API_NECHROME_NECHROME_API_H_
+diff --git a/chrome/common/extensions/api/_api_features.json b/chrome/common/extensions/api/_api_features.json
+index 4255410af8..8f09339152 100644
+--- a/chrome/common/extensions/api/_api_features.json
++++ b/chrome/common/extensions/api/_api_features.json
+@@ -638,6 +638,10 @@
+     "dependencies": ["permission:fontSettings"],
+     "contexts": ["privileged_extension"]
+   },
++  "nechrome": {
++    "dependencies": ["permission:nechrome"],
++    "contexts": ["privileged_extension"]
++  },
+   "gcm": {
+     "dependencies": ["permission:gcm"],
+     "contexts": ["privileged_extension"]
+diff --git a/chrome/common/extensions/api/_permission_features.json b/chrome/common/extensions/api/_permission_features.json
+index 8fc9516817..54d3daaba0 100644
+--- a/chrome/common/extensions/api/_permission_features.json
++++ b/chrome/common/extensions/api/_permission_features.json
+@@ -493,6 +493,10 @@
+     "channel": "stable",
+     "extension_types": ["extension", "legacy_packaged_app"]
+   },
++  "nechrome": {
++    "channel": "stable",
++    "extension_types": ["extension"]
++  },
+   "gcm": {
+     "channel": "stable",
+     "extension_types": ["extension", "platform_app"]
+diff --git a/chrome/common/extensions/api/api_sources.gni b/chrome/common/extensions/api/api_sources.gni
+index 194386bf5e..146953355e 100644
+--- a/chrome/common/extensions/api/api_sources.gni
++++ b/chrome/common/extensions/api/api_sources.gni
+@@ -30,6 +30,7 @@ schema_sources_ = [
+   "history.json",
+   "identity.webidl",
+   "instance_id.json",
++  "nechrome.json",
+   "notifications.webidl",
+   "omnibox.json",
+   "page_capture.json",
+diff --git a/chrome/common/extensions/api/nechrome.json b/chrome/common/extensions/api/nechrome.json
+new file mode 100644
+index 0000000000..737bf12643
+--- /dev/null
++++ b/chrome/common/extensions/api/nechrome.json
+@@ -0,0 +1,59 @@
++// Copyright 2026 ASHIKA Group. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++[
++  {
++    "namespace": "nechrome",
++    "description": "NeChrome only. Lets extensions change parts of the browser that Chrome does not open to extensions: how many rows the bookmark bar may use, and the default search engine.",
++    "types": [
++      {
++        "id": "SearchEngine",
++        "type": "object",
++        "description": "A search engine from the browser's list.",
++        "properties": {
++          "id": {"type": "string", "description": "Identifier to pass to setDefaultSearchEngine()."},
++          "name": {"type": "string", "description": "The name shown to the user."},
++          "keyword": {"type": "string", "description": "The keyword typed in the address bar to use this engine."},
++          "isDefault": {"type": "boolean", "description": "Whether this is the current default search engine."}
++        }
++      }
++    ],
++    "functions": [
++      {
++        "name": "getBookmarkBarMaxRows",
++        "type": "function",
++        "description": "Returns how many rows the bookmark bar may wrap onto (1 means a single row, like Chrome).",
++        "parameters": [],
++        "returns_async": {
++          "name": "callback",
++          "parameters": [{"name": "rows", "type": "integer"}]
++        }
++      },
++      {
++        "name": "setBookmarkBarMaxRows",
++        "type": "function",
++        "description": "Sets how many rows the bookmark bar may wrap onto, from 1 to 5. Bookmarks that still do not fit go to the overflow menu.",
++        "parameters": [{"name": "rows", "type": "integer", "minimum": 1, "maximum": 5}],
++        "returns_async": {"name": "callback", "parameters": []}
++      },
++      {
++        "name": "getSearchEngines",
++        "type": "function",
++        "description": "Returns the search engines that can be made the default (the main list on the settings page).",
++        "parameters": [],
++        "returns_async": {
++          "name": "callback",
++          "parameters": [{"name": "engines", "type": "array", "items": {"$ref": "SearchEngine"}}]
++        }
++      },
++      {
++        "name": "setDefaultSearchEngine",
++        "type": "function",
++        "description": "Makes the given search engine the default, as if the user chose it on the settings page.",
++        "parameters": [{"name": "id", "type": "string"}],
++        "returns_async": {"name": "callback", "parameters": []}
++      }
++    ]
++  }
++]
+diff --git a/chrome/common/extensions/permissions/chrome_api_permissions.cc b/chrome/common/extensions/permissions/chrome_api_permissions.cc
+index 86f4a132b4..896ec43e56 100644
+--- a/chrome/common/extensions/permissions/chrome_api_permissions.cc
++++ b/chrome/common/extensions/permissions/chrome_api_permissions.cc
+@@ -97,6 +97,7 @@ constexpr APIPermissionInfo::InitInfo permissions_to_register[] = {
+     {APIPermissionID::kFileBrowserHandler, "fileBrowserHandler",
+      APIPermissionInfo::kFlagCannotBeOptional |
+          APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
++    {APIPermissionID::kNeChrome, "nechrome"},
+     {APIPermissionID::kFontSettings, "fontSettings",
+      APIPermissionInfo::kFlagCannotBeOptional |
+          APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+diff --git a/extensions/browser/extension_function_histogram_value.h b/extensions/browser/extension_function_histogram_value.h
+index 4f8efeb0d3..277f306cb6 100644
+--- a/extensions/browser/extension_function_histogram_value.h
++++ b/extensions/browser/extension_function_histogram_value.h
+@@ -2051,6 +2051,11 @@ enum HistogramValue {
+   ENTERPRISE_WEBRTC_STARTCAPTURE = 1986,
+   ENTERPRISE_WEBRTC_GETCAPTURESTATUS = 1987,
+   ENTERPRISE_WEBRTC_STOPCAPTURE = 1988,
++  // NeChrome. Renumber if upstream takes these values.
++  NECHROME_GETBOOKMARKBARMAXROWS = 1989,
++  NECHROME_SETBOOKMARKBARMAXROWS = 1990,
++  NECHROME_GETSEARCHENGINES = 1991,
++  NECHROME_SETDEFAULTSEARCHENGINE = 1992,
+   // Last entry: Add new entries above, then run:
+   // tools/metrics/histograms/update_extension_histograms.py
+   ENUM_BOUNDARY
+diff --git a/extensions/common/mojom/api_permission_id.mojom b/extensions/common/mojom/api_permission_id.mojom
+index 8bc0e9b328..0e52992d3e 100644
+--- a/extensions/common/mojom/api_permission_id.mojom
++++ b/extensions/common/mojom/api_permission_id.mojom
+@@ -299,6 +299,8 @@ enum APIPermissionID {
+   kBluetoothPeripheral = 272,
+   kPublicSuffix = 273,
+   kEnterpriseWebrtc = 274,
++  // NeChrome: chrome.nechrome. Renumber if upstream takes 275.
++  kNeChrome = 275,
+ 
+   // Add new entries at the end of the enum and be sure to update the
+   // "ExtensionPermission3" enum in
